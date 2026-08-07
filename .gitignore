@@ -213,6 +213,20 @@ tempCodeRunnerFile.py
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Cossa Signals — trading data & credentials
+data/raw/
+data/processed/*.csv
+data/processed/*.parquet
+*.pkl
+*.joblib
+*.h5
+config/*.env
+config/secrets.json
+backtest_results/
+*.log
+# OS
+.DS_Store
+Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
