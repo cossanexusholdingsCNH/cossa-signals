@@ -1,0 +1,27 @@
+# Cossa Signals — dependencies
+# Install with: pip install -r requirements.txt
+
+# --- Data sources ---
+yfinance>=0.2.40          # free shares/forex historical data, no API key required
+requests>=2.31.0          # for OANDA / Alpha Vantage REST calls
+python-dotenv>=1.0.1      # loads .env into environment variables safely
+
+# --- Data handling ---
+pandas>=2.2.0
+numpy>=1.26.0
+
+# --- Technical analysis ---
+ta>=0.11.0                # RSI, MACD, ATR, Bollinger Bands, etc.
+
+# --- Backtesting ---
+vectorbt>=0.26.0          # fast, free, open-source backtesting engine
+
+# --- Machine learning (added when we build the signal model) ---
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+
+# --- Delivery bot (added when we build the alert layer) ---
+python-telegram-bot>=21.0  # free Telegram bot API — start here before WhatsApp
+
+# --- Dev/testing ---
+pytest>=8.0.0
