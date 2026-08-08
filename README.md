@@ -37,12 +37,19 @@ cp config/.env.example config/.env   # then fill in your real API keys
 
 - [x] Repo structure and dependencies defined
 - [x] Forex data fetcher (yfinance, daily OHLCV — EUR/USD, GBP/USD, USD/ZAR)
-- [ ] Backtesting harness
-- [ ] Baseline technical strategies (momentum, mean-reversion)
+- [x] Deriv synthetic indices data fetcher (Volatility 75, Boom 1000/500, Crash 1000/500) — written and syntax-verified; **not yet tested against a live connection**, see note in fetch_deriv_data.py
+- [x] Backtesting harness (vectorbt-based, with mandatory stop-loss/take-profit and fee modeling) — tested end-to-end against synthetic sample data, confirmed working
+- [x] Baseline strategies: momentum crossover, RSI mean-reversion, spike-reversion (Boom/Crash-specific) — all are untested hypotheses on real data, not proven edges
+- [ ] Run backtests against real historical data once fetch_deriv_data.py is validated locally
 - [ ] ML signal layer
-- [ ] Risk management / position sizing logic
+- [ ] Risk management / position sizing logic (beyond per-trade stop-loss)
 - [ ] Telegram delivery bot
 - [ ] Dashboard (Lovable + Supabase)
+- [ ] Copy-trade execution — **on hold** pending backtest validation, paper trading, and a compliance/FSP licensing check (see project decisions in chat history)
+
+## A note on Deriv synthetic indices (Volatility, Boom, Crash)
+
+These instruments carry a materially different risk profile from forex majors — no real underlying asset, engineered volatility, and in the case of Boom/Crash, deliberate large directional spikes at semi-random intervals. Strategies here (especially `spike_reversion_boom_crash`) are explicitly experimental. Do not treat a good backtest result on these instruments as proof of edge without extended paper-trading validation — short winning streaks on these markets are a known pattern before larger losses, not a reliable signal of skill.
 
 ## Ownership
 

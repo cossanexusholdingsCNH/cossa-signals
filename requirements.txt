@@ -4,6 +4,7 @@
 # --- Data sources ---
 yfinance>=0.2.40          # free shares/forex historical data, no API key required
 requests>=2.31.0          # for OANDA / Alpha Vantage REST calls
+websockets>=12.0          # for Deriv API (synthetic indices: Volatility, Boom, Crash)
 python-dotenv>=1.0.1      # loads .env into environment variables safely
 
 # --- Data handling ---
