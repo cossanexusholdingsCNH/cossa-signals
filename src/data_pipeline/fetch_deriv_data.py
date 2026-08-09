@@ -60,6 +60,51 @@ DERIV_SYMBOLS = {
 DERIV_MAX_CANDLES_PER_CALL = 5000  # Deriv's per-request cap for ticks_history/candles
 
 
+async def discover_synthetic_symbols() -> list[dict]:
+    """
+    Ask Deriv directly for every currently active synthetic index symbol —
+    Volatility, Boom, Crash, Step, Jump, Range Break, and any others Deriv
+    currently offers. This replaces a hardcoded symbol list: Deriv adds and
+    retires instruments over time, and the only reliable source of truth is
+    Deriv's own active_symbols endpoint, not a list written by hand.
+
+    Returns:
+        List of dicts: {"symbol": "R_75", "display_name": "Volatility 75 Index",
+        "submarket": "random_index"}, one per active synthetic index.
+    """
+    request = {"active_symbols": "brief", "product_type": "basic"}
+
+    try:
+        async with websockets.connect(DERIV_WS_URL) as ws:
+            await ws.send(json.dumps(request))
+            response_raw = await ws.recv()
+            response = json.loads(response_raw)
+    except Exception as exc:
+        logger.error(f"Failed to fetch active symbols from Deriv: {exc}")
+        return []
+
+    if "error" in response:
+        logger.error(f"Deriv API error on active_symbols: {response['error'].get('message')}")
+        return []
+
+    all_symbols = response.get("active_symbols", [])
+    synthetic = [
+        {
+            "symbol": s["symbol"],
+            "display_name": s.get("display_name", s["symbol"]),
+            "submarket": s.get("submarket", "unknown"),
+        }
+        for s in all_symbols
+        if s.get("market") == "synthetic_index"
+    ]
+
+    logger.info(f"Discovered {len(synthetic)} active synthetic index symbols on Deriv")
+    submarkets = sorted(set(s["submarket"] for s in synthetic))
+    logger.info(f"Submarkets found: {submarkets}")
+
+    return synthetic
+
+
 async def _fetch_one_batch(
     ws,
     symbol: str,
@@ -191,6 +236,21 @@ def save_symbol(df: pd.DataFrame, name: str) -> Path:
     return out_path
 
 
+def save_symbol_catalog(symbols: list[dict]) -> Path:
+    """
+    Save the discovered symbol list to data/raw/symbol_catalog.json — this
+    becomes the reference list for which instruments need study guides,
+    backtests, etc. Regenerate it periodically since Deriv adds/retires
+    instruments over time.
+    """
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = RAW_DATA_DIR / "symbol_catalog.json"
+    with open(out_path, "w") as f:
+        json.dump(symbols, f, indent=2)
+    logger.info(f"Saved symbol catalog ({len(symbols)} symbols) to {out_path}")
+    return out_path
+
+
 async def fetch_all(
     symbols: list[str],
     count: int = 5000,
@@ -220,8 +280,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--symbols",
         nargs="+",
-        default=list(DERIV_SYMBOLS.values()),
-        help=f"Deriv symbol codes to fetch (default: {list(DERIV_SYMBOLS.values())})",
+        default=None,
+        help=f"Specific Deriv symbol codes to fetch, e.g. R_75 BOOM1000. Ignored if --all is given. "
+             f"If neither --symbols nor --all is given, defaults to the core set: {list(DERIV_SYMBOLS.values())}",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Discover and fetch EVERY currently active synthetic index on Deriv (Volatility, "
+             "Boom, Crash, Step, Jump, Range Break, and any others Deriv currently offers) — "
+             "queried live from Deriv, not a hardcoded list. Saves the full catalog to "
+             "data/raw/symbol_catalog.json as a reference for building study guides per instrument.",
     )
     parser.add_argument(
         "--count",
@@ -243,4 +312,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    asyncio.run(fetch_all(args.symbols, count=args.count, granularity=args.granularity, days=args.days))
+    async def main():
+        if args.all:
+            catalog = await discover_synthetic_symbols()
+            if not catalog:
+                logger.error("No symbols discovered — check your DERIV_APP_ID and connection, then retry.")
+                return
+            save_symbol_catalog(catalog)
+            symbols_to_fetch = [s["symbol"] for s in catalog]
+            logger.info(f"Fetching all {len(symbols_to_fetch)} discovered synthetic indices...")
+        else:
+            symbols_to_fetch = args.symbols if args.symbols else list(DERIV_SYMBOLS.values())
+
+        await fetch_all(symbols_to_fetch, count=args.count, granularity=args.granularity, days=args.days)
+
+    asyncio.run(main())

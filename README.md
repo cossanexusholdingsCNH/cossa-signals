@@ -39,7 +39,7 @@ cp config/.env.example config/.env   # then fill in your real API keys
 - [x] Forex data fetcher (yfinance, daily OHLCV — EUR/USD, GBP/USD, USD/ZAR)
 - [x] Deriv synthetic indices data fetcher (Volatility 75, Boom 1000/500, Crash 1000/500) — written and syntax-verified; **not yet tested against a live connection**, see note in fetch_deriv_data.py
 - [x] Backtesting harness (vectorbt-based, with mandatory stop-loss/take-profit and fee modeling) — tested end-to-end against synthetic sample data, confirmed working
-- [x] Real Deriv data pipeline validated live (R_75, BOOM1000, BOOM500, CRASH1000, CRASH500)
+- [x] Deriv synthetic indices data fetcher — now discovers the FULL live catalog directly from Deriv's own API (`--all` flag: every Volatility, Boom, Crash, Step, Jump, Range Break index Deriv currently offers, not a hardcoded list) — discovery logic verified against a mock, not yet run live
 - [x] Pagination added to fetch_deriv_data.py (--days flag) — automatically chains multiple API calls to pull real months of history instead of one 5000-candle batch (~3.5 days); logic verified against a mocked connection, not yet run against live Deriv for a large pull
 - [x] Educational resource: docs/Deriv_Synthetic_Indices_Trading_Guide.docx — plain-language guide to synthetic indices, risk management, and strategy frameworks for newcomers
 - [x] Baseline strategies: momentum crossover, RSI mean-reversion, spike-reversion (Boom/Crash-specific) — all are untested hypotheses on real data, not proven edges
