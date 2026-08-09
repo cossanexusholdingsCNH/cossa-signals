@@ -60,6 +60,70 @@ DERIV_SYMBOLS = {
 DERIV_MAX_CANDLES_PER_CALL = 5000  # Deriv's per-request cap for ticks_history/candles
 
 
+# Well-documented Deriv synthetic index symbols, confirmed against Deriv's
+# own official API docs and schema (not guessed). Grouped by family.
+# Because Deriv's active_symbols endpoint has been unreliable for this app
+# (returning an empty list live despite ticks_history working fine on the
+# same connection — likely an app-permission restriction, not a code bug),
+# --all now uses this list and VALIDATES each symbol live via a small
+# ticks_history call, rather than trusting active_symbols. Anything that
+# fails validation is reported, not silently skipped — see validate below.
+CANDIDATE_SYMBOLS = {
+    # Volatility Indices — standard (2-second-ish tick)
+    "Volatility 10 Index": "R_10",
+    "Volatility 25 Index": "R_25",
+    "Volatility 50 Index": "R_50",
+    "Volatility 75 Index": "R_75",
+    "Volatility 100 Index": "R_100",
+    # Volatility Indices — 1-second variants
+    "Volatility 10 (1s) Index": "1HZ10V",
+    "Volatility 25 (1s) Index": "1HZ25V",
+    "Volatility 50 (1s) Index": "1HZ50V",
+    "Volatility 75 (1s) Index": "1HZ75V",
+    "Volatility 100 (1s) Index": "1HZ100V",
+    # Boom / Crash — confirmed live in this project already
+    "Boom 500 Index": "BOOM500",
+    "Boom 1000 Index": "BOOM1000",
+    "Crash 500 Index": "CRASH500",
+    "Crash 1000 Index": "CRASH1000",
+    # Bull/Bear market synthetics (confirmed in Deriv's official API docs)
+    "Bull Market Index": "RDBULL",
+    "Bear Market Index": "RDBEAR",
+    # Step Index — widely documented symbol, slightly less certain than the above
+    "Step Index": "stpRNG",
+}
+
+
+async def validate_symbols_live(symbols: dict) -> list[dict]:
+    """
+    Confirm which candidate symbols are actually tradeable right now, by
+    attempting a tiny 2-candle fetch for each over a single persistent
+    connection. This is more reliable than trusting active_symbols, which
+    has been returning empty on this app despite ticks_history working —
+    we verify against the endpoint we KNOW works instead of guessing.
+
+    Returns:
+        List of dicts for symbols that responded successfully:
+        {"symbol": "R_75", "display_name": "Volatility 75 Index"}
+    """
+    validated = []
+    try:
+        async with websockets.connect(DERIV_WS_URL) as ws:
+            for display_name, symbol in symbols.items():
+                candles = await _fetch_one_batch(ws, symbol, count=2, end_epoch="latest", granularity=60)
+                if candles:
+                    validated.append({"symbol": symbol, "display_name": display_name})
+                    logger.info(f"  [OK]     {symbol:12} {display_name}")
+                else:
+                    logger.warning(f"  [FAILED] {symbol:12} {display_name} — not tradeable or symbol code incorrect")
+                await asyncio.sleep(0.3)
+    except Exception as exc:
+        logger.error(f"Validation connection failed partway through: {exc}")
+
+    logger.info(f"Validated {len(validated)}/{len(symbols)} candidate symbols as live and tradeable")
+    return validated
+
+
 async def discover_synthetic_symbols() -> list[dict]:
     """
     Ask Deriv directly for every currently active synthetic index symbol —
@@ -334,13 +398,14 @@ if __name__ == "__main__":
 
     async def main():
         if args.all:
-            catalog = await discover_synthetic_symbols()
+            logger.info(f"Validating {len(CANDIDATE_SYMBOLS)} candidate synthetic index symbols live...")
+            catalog = await validate_symbols_live(CANDIDATE_SYMBOLS)
             if not catalog:
-                logger.error("No symbols discovered — check your DERIV_APP_ID and connection, then retry.")
+                logger.error("No symbols validated — check your DERIV_APP_ID and connection, then retry.")
                 return
             save_symbol_catalog(catalog)
             symbols_to_fetch = [s["symbol"] for s in catalog]
-            logger.info(f"Fetching all {len(symbols_to_fetch)} discovered synthetic indices...")
+            logger.info(f"Fetching all {len(symbols_to_fetch)} validated synthetic indices...")
         else:
             symbols_to_fetch = args.symbols if args.symbols else list(DERIV_SYMBOLS.values())
 
