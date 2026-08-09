@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from backtest_engine import load_data, run_backtest
+from backtest_engine import load_data, run_backtest, resample_ohlc
 from strategies import STRATEGY_REGISTRY
 
 RAW_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
@@ -31,15 +31,22 @@ RESULTS_DIR = Path(__file__).resolve().parents[2] / "backtest_results"
 # are used to classify — this mirrors the actual symbol codes the data
 # pipeline fetches (R_*, 1HZ*V, BOOM*, CRASH*, RDBULL/RDBEAR, stpRNG).
 BOOM_CRASH_PREFIXES = ("BOOM", "CRASH")
-GENERAL_STRATEGIES = ["momentum_ma_crossover", "rsi_mean_reversion"]
+
+# Momentum crossover lost money on all 17/17 instruments in the first full
+# batch run (1-minute candles, 30 days) — a structurally consistent result,
+# not noise, since these instruments are engineered to have no persistent
+# trend (see the trading guide, Chapter 1). Not worth re-testing by default;
+# pass --include-momentum to run it anyway if you want the comparison point.
+GENERAL_STRATEGIES = ["rsi_mean_reversion"]
+GENERAL_STRATEGIES_WITH_MOMENTUM = ["momentum_ma_crossover", "rsi_mean_reversion"]
 BOOM_CRASH_STRATEGIES = ["spike_reversion_boom_crash"]
 
 
-def classify_symbol(symbol: str) -> list[str]:
+def classify_symbol(symbol: str, include_momentum: bool = False) -> list[str]:
     """Return the list of strategy names appropriate to test for this symbol."""
     if symbol.startswith(BOOM_CRASH_PREFIXES):
         return BOOM_CRASH_STRATEGIES
-    return GENERAL_STRATEGIES
+    return GENERAL_STRATEGIES_WITH_MOMENTUM if include_momentum else GENERAL_STRATEGIES
 
 
 def discover_available_symbols() -> list[str]:
@@ -55,6 +62,8 @@ def run_batch(
     initial_capital: float = 10_000.0,
     stop_loss_pct: float = 0.02,
     take_profit_pct: float = 0.04,
+    resample_rule: str | None = None,
+    include_momentum: bool = False,
 ) -> pd.DataFrame:
     """
     Run every applicable strategy against every symbol, collect results
@@ -69,8 +78,13 @@ def run_batch(
             print(f"  [SKIP] {symbol}: {exc}")
             continue
 
-        strategies_to_test = classify_symbol(symbol)
-        candle_span = f"{len(df)} candles ({df.index.min()} to {df.index.max()})"
+        original_len = len(df)
+        if resample_rule:
+            df = resample_ohlc(df, resample_rule)
+
+        strategies_to_test = classify_symbol(symbol, include_momentum=include_momentum)
+        span_note = f" -> resampled to {resample_rule} ({len(df)} candles)" if resample_rule else ""
+        candle_span = f"{original_len} candles ({df.index.min()} to {df.index.max()}){span_note}"
 
         for strategy_name in strategies_to_test:
             result = run_backtest(
@@ -160,6 +174,19 @@ if __name__ == "__main__":
     parser.add_argument("--capital", type=float, default=10_000.0)
     parser.add_argument("--stop-loss", type=float, default=0.02)
     parser.add_argument("--take-profit", type=float, default=0.04)
+    parser.add_argument(
+        "--resample",
+        default=None,
+        help="Resample 1-minute data to a wider candle before testing, e.g. 5min, 15min, 1h. "
+             "Reduces trade frequency and fee drag — worth trying since RSI mean-reversion was "
+             "the only strategy showing any positive signal on the 1-minute batch run.",
+    )
+    parser.add_argument(
+        "--include-momentum",
+        action="store_true",
+        help="Also test momentum_ma_crossover, which lost money on 17/17 instruments in the "
+             "first batch run. Off by default now — pass this to re-include it anyway.",
+    )
     args = parser.parse_args()
 
     symbols_to_test = args.symbols if args.symbols else discover_available_symbols()
@@ -168,11 +195,17 @@ if __name__ == "__main__":
         print("No data found in data/raw/. Run the fetch scripts first.")
         exit(1)
 
-    print(f"Running batch backtest across {len(symbols_to_test)} symbol(s): {symbols_to_test}\n")
+    print(f"Running batch backtest across {len(symbols_to_test)} symbol(s): {symbols_to_test}")
+    if args.resample:
+        print(f"Resampling to {args.resample} candles before testing")
+    print()
+
     results = run_batch(
         symbols_to_test,
         initial_capital=args.capital,
         stop_loss_pct=args.stop_loss,
         take_profit_pct=args.take_profit,
+        resample_rule=args.resample,
+        include_momentum=args.include_momentum,
     )
     save_and_summarize(results)

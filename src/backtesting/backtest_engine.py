@@ -25,6 +25,36 @@ RAW_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 RESULTS_DIR = Path(__file__).resolve().parents[2] / "backtest_results"
 
 
+def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """
+    Resample 1-minute OHLC data to a wider candle size, e.g. "5min" or "15min".
+
+    Why this matters: at 1-minute granularity, RSI mean-reversion fired
+    14-28 times over 30 days and was the only strategy showing any positive
+    signal; momentum fired 90-180 times and lost heavily everywhere. High
+    trade frequency on tight stop/take-profit levels means per-trade fees
+    compound fast regardless of whether the entry logic has real merit.
+    Wider candles mean fewer, more deliberate signals — this tests whether
+    fee drag was masking real edge, or whether the strategies simply don't
+    work here at any timeframe.
+
+    Args:
+        df: OHLC DataFrame with a datetime index (as loaded by load_data()).
+        rule: Pandas resample rule, e.g. "5min", "15min", "1h".
+
+    Returns:
+        Resampled OHLC DataFrame — Open of first candle in each bucket,
+        High/Low as the max/min across the bucket, Close of the last candle.
+    """
+    resampled = df.resample(rule).agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+    }).dropna()
+    return resampled
+
+
 def load_data(symbol: str) -> pd.DataFrame:
     """Load a symbol's historical CSV, as saved by the data pipeline scripts."""
     path = RAW_DATA_DIR / f"{symbol}.csv"
