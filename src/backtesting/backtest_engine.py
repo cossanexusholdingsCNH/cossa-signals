@@ -25,6 +25,31 @@ RAW_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 RESULTS_DIR = Path(__file__).resolve().parents[2] / "backtest_results"
 
 
+def train_test_split_ohlc(df: pd.DataFrame, train_frac: float = 0.7) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split OHLC data chronologically into a training portion and a held-out
+    test portion. This is the real safeguard against the trap we just hit:
+    if a strategy only looks good on the exact data we tuned it against
+    (or the exact timeframe we happened to pick), that's overfitting, not
+    edge. A strategy with genuine edge should perform reasonably on data
+    it never saw. One that only works on the training slice and falls
+    apart on the test slice was fooling us, not working.
+
+    Args:
+        df: OHLC data, chronologically ordered (as loaded by load_data()).
+        train_frac: Fraction of the data (earliest portion) used for
+                    training/tuning. The remainder is the untouched
+                    test set — do not tune parameters against it.
+
+    Returns:
+        (train_df, test_df) — chronologically split, no overlap.
+    """
+    split_idx = int(len(df) * train_frac)
+    train_df = df.iloc[:split_idx]
+    test_df = df.iloc[split_idx:]
+    return train_df, test_df
+
+
 def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     """
     Resample 1-minute OHLC data to a wider candle size, e.g. "5min" or "15min".

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from backtest_engine import load_data, run_backtest, resample_ohlc
+from backtest_engine import load_data, run_backtest, resample_ohlc, train_test_split_ohlc
 from strategies import STRATEGY_REGISTRY
 
 RAW_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
@@ -40,6 +40,13 @@ BOOM_CRASH_PREFIXES = ("BOOM", "CRASH")
 GENERAL_STRATEGIES = ["rsi_mean_reversion"]
 GENERAL_STRATEGIES_WITH_MOMENTUM = ["momentum_ma_crossover", "rsi_mean_reversion"]
 BOOM_CRASH_STRATEGIES = ["spike_reversion_boom_crash"]
+
+# Below this many trades, win rate and return are statistically meaningless —
+# a single trade "winning" is not a 100% win rate in any usable sense. The
+# 15-minute resample run surfaced exactly this trap (1HZ50V: 2 trades,
+# "100% win rate") — this threshold exists so results like that never get
+# ranked alongside genuinely tested ones without a clear warning.
+MIN_TRUSTWORTHY_TRADES = 30
 
 
 def classify_symbol(symbol: str, include_momentum: bool = False) -> list[str]:
@@ -118,7 +125,9 @@ def run_batch(
                 "sharpe": result["sharpe_ratio"],
                 "max_dd_pct": result["max_drawdown_pct"],
                 "total_return_pct": result["total_return_pct"],
-                "note": "",
+                "trustworthy": result["total_trades"] >= MIN_TRUSTWORTHY_TRADES,
+                "note": "" if result["total_trades"] >= MIN_TRUSTWORTHY_TRADES
+                        else f"only {result['total_trades']} trades — below {MIN_TRUSTWORTHY_TRADES}, treat as noise",
             })
             print(f"  [DONE] {symbol:12} {strategy_name:28} "
                   f"trades={result['total_trades']:>5}  "
@@ -140,15 +149,33 @@ def save_and_summarize(results: pd.DataFrame) -> None:
         print("\nNo strategy/symbol combination generated any trades. Nothing to rank.")
         return
 
+    trustworthy = tested[tested["trustworthy"]].sort_values("total_return_pct", ascending=False)
+    noise = tested[~tested["trustworthy"]].sort_values("total_return_pct", ascending=False)
+
     print(f"\n{'=' * 70}")
-    print("RANKED BY TOTAL RETURN (highest first) — trades > 0 only")
+    print(f"TRUSTWORTHY RESULTS (>= {MIN_TRUSTWORTHY_TRADES} trades) — ranked by return")
     print(f"{'=' * 70}")
-    ranked = tested.sort_values("total_return_pct", ascending=False)
-    for _, row in ranked.iterrows():
+    if trustworthy.empty:
+        print("  None. Every combination this run had too few trades to draw a real")
+        print("  conclusion from — see below. This is a legitimate outcome to report,")
+        print("  not a gap to paper over: it means we need more data or a different")
+        print("  approach before any result here can be trusted.")
+    else:
+        for _, row in trustworthy.iterrows():
+            print(
+                f"  {row['symbol']:12} {row['strategy']:28} "
+                f"return={row['total_return_pct']:>7}%  win_rate={row['win_rate_pct']:>6}%  "
+                f"sharpe={row['sharpe']:>7}  trades={row['trades']:>5}  max_dd={row['max_dd_pct']}%"
+            )
+
+    print(f"\n{'=' * 70}")
+    print(f"TOO FEW TRADES TO TRUST (< {MIN_TRUSTWORTHY_TRADES} trades) — for reference only, NOT ranked as findings")
+    print(f"{'=' * 70}")
+    for _, row in noise.iterrows():
         print(
             f"  {row['symbol']:12} {row['strategy']:28} "
             f"return={row['total_return_pct']:>7}%  win_rate={row['win_rate_pct']:>6}%  "
-            f"sharpe={row['sharpe']:>7}  trades={row['trades']:>5}  max_dd={row['max_dd_pct']}%"
+            f"trades={row['trades']:>3}  <- statistically meaningless at this count"
         )
 
     print(f"\n{'=' * 70}")
@@ -157,8 +184,8 @@ def save_and_summarize(results: pd.DataFrame) -> None:
     print("  - A positive backtest is a candidate for paper trading, not a proven edge.")
     print("  - Check the data_span column in the CSV — a strategy tested on only a")
     print("    few days of data is far less trustworthy than one tested on 30+ days.")
-    print("  - Low trade counts (under ~30-50) mean the win rate/return numbers")
-    print("    could easily be noise, not a real pattern.")
+    print(f"  - Trade counts under {MIN_TRUSTWORTHY_TRADES} are reported separately above")
+    print("    on purpose — they are not ranked as findings, only shown for reference.")
     print("  - The next real step for any promising result is paper trading — never")
     print("    real capital straight off a backtest, no matter how good it looks.")
 
