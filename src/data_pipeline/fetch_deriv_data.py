@@ -72,7 +72,12 @@ async def discover_synthetic_symbols() -> list[dict]:
         List of dicts: {"symbol": "R_75", "display_name": "Volatility 75 Index",
         "submarket": "random_index"}, one per active synthetic index.
     """
-    request = {"active_symbols": "brief", "product_type": "basic"}
+    # NOTE: Deriv removed landing_company / landing_company_short / product_type
+    # as active_symbols parameters in their current API version (confirmed
+    # against Deriv's own API comparison docs, Aug 2026). Sending product_type
+    # here previously caused Deriv to silently return an empty list instead
+    # of an error — the request below is the current, correct minimal form.
+    request = {"active_symbols": "brief"}
 
     try:
         async with websockets.connect(DERIV_WS_URL) as ws:
