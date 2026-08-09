@@ -88,6 +88,21 @@ async def discover_synthetic_symbols() -> list[dict]:
         return []
 
     all_symbols = response.get("active_symbols", [])
+
+    if not all_symbols:
+        # This shouldn't normally happen — dump diagnostic info so we can
+        # see exactly what Deriv actually sent back instead of guessing.
+        logger.error(
+            "active_symbols came back empty. Response msg_type: "
+            f"{response.get('msg_type', 'MISSING')}. Top-level keys: {list(response.keys())}"
+        )
+        logger.error(f"Full raw response (first 2000 chars): {json.dumps(response)[:2000]}")
+        return []
+
+    logger.info(f"Deriv returned {len(all_symbols)} total active symbols across all markets (before filtering)")
+    markets_seen = sorted(set(s.get("market", "MISSING") for s in all_symbols))
+    logger.info(f"Markets present in response: {markets_seen}")
+
     synthetic = [
         {
             "symbol": s["symbol"],
