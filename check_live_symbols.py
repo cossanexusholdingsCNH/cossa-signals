@@ -82,7 +82,14 @@ async def check_active_symbols():
 
 
 async def main():
-    print("=== Control: live tick subscribe on R_75 (known-working continuous index) ===")
+    print(f"=== Using DERIV_APP_ID = {DERIV_APP_ID!r} ===")
+    if DERIV_APP_ID == "1089":
+        print("  (this is Deriv's generic public demo app_id — the fallback default, "
+              "not a registered app. If everything below fails, this is almost "
+              "certainly why: register your own app_id at "
+              "https://api.deriv.com/dashboard/ and set DERIV_APP_ID in config/.env)")
+
+    print("\n=== Control: live tick subscribe on R_75 (known-working continuous index) ===")
     await try_tick_subscribe("R_75")
 
     print("\n=== Live tick subscribe on RDBULL / RDBEAR ===")
