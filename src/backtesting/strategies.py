@@ -113,8 +113,81 @@ def spike_reversion_boom_crash(
     return entries, exits
 
 
+def daily_reset_reversion(
+    df: pd.DataFrame,
+    direction: str = "post_reset_long",
+    entry_window_min: int = 30,
+    exit_window_min: int = 30,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Purpose-built for RDBULL/RDBEAR's confirmed daily reset behavior —
+    NOT a generic technical indicator applied blind.
+
+    Deriv classifies these as "Daily Reset Indices": price resets to a
+    baseline (~1000) at 00:00 GMT every day. Direct measurement against
+    the fetched 180-day/5-min data confirmed this is a real, large
+    discontinuity — the overnight gap (prev close -> next open) has
+    ~10x the standard deviation of a normal candle-to-candle move, with
+    RDBULL gapping DOWN ~8.6% on average at reset and RDBEAR gapping UP
+    ~5.3% on average. That's the opposite of noise; it's a scheduled,
+    designed event.
+
+    This came out of the batch backtest: generic rsi_mean_reversion
+    showed a real edge on exactly these two symbols and nowhere else
+    among the 17 instruments tested — which lines up precisely with
+    "daily reset" vs "continuous", too cleanly to be coincidence. This
+    strategy tests the more honest, direct hypothesis: trade the known
+    reset window itself, rather than relying on RSI to stumble into it.
+
+    Args:
+        direction: "post_reset_long" — buy shortly after the reset,
+                   sell shortly before the next one. Fits RDBULL, which
+                   climbs from baseline intraday then drops back at
+                   reset: ride the climb, exit before the drop.
+                   "pre_reset_long" — buy shortly before the reset,
+                   sell shortly after the next one. Fits RDBEAR, which
+                   falls from baseline intraday then jumps back at
+                   reset: buy right before the bounce, sell once it's
+                   landed.
+        entry_window_min: Minutes from the reset boundary (00:00 GMT)
+                   during which an entry signal can fire.
+        exit_window_min: Minutes from the reset boundary during which
+                   an exit signal can fire.
+    """
+    minutes_since_midnight = df.index.hour * 60 + df.index.minute
+
+    if direction == "post_reset_long":
+        entries = minutes_since_midnight < entry_window_min
+        exits = minutes_since_midnight >= (1440 - exit_window_min)
+    elif direction == "pre_reset_long":
+        entries = minutes_since_midnight >= (1440 - entry_window_min)
+        exits = minutes_since_midnight < exit_window_min
+    else:
+        raise ValueError(f"Unknown direction '{direction}'. Use 'post_reset_long' or 'pre_reset_long'.")
+
+    entries = pd.Series(entries, index=df.index)
+    exits = pd.Series(exits, index=df.index)
+
+    # Only the first entry signal and first exit signal within each
+    # window should fire — otherwise every candle in a 30-minute window
+    # generates a redundant re-entry/re-exit signal. Note: .shift(1) on a
+    # bool Series inserts NaN at the start, upcasting the whole series to
+    # object dtype — ~ on that is bitwise NOT on Python bools (~False ==
+    # -1, which is truthy), silently breaking the dedup. .astype(bool)
+    # after .fillna(False) avoids that trap.
+    entries = entries & ~(entries.shift(1).fillna(False).astype(bool))
+    exits = exits & ~(exits.shift(1).fillna(False).astype(bool))
+
+    return entries, exits
+
+
 STRATEGY_REGISTRY = {
     "momentum_ma_crossover": momentum_ma_crossover,
     "rsi_mean_reversion": rsi_mean_reversion,
     "spike_reversion_boom_crash": spike_reversion_boom_crash,
+    "daily_reset_reversion": daily_reset_reversion,
+    # Pre-bound direction variants so the batch runner can route by symbol
+    # without needing a kwargs-passing mechanism it doesn't currently have.
+    "daily_reset_reversion_bull": lambda df, **kw: daily_reset_reversion(df, direction="post_reset_long", **kw),
+    "daily_reset_reversion_bear": lambda df, **kw: daily_reset_reversion(df, direction="pre_reset_long", **kw),
 }

@@ -32,6 +32,19 @@ RESULTS_DIR = Path(__file__).resolve().parents[2] / "backtest_results"
 # pipeline fetches (R_*, 1HZ*V, BOOM*, CRASH*, RDBULL/RDBEAR, stpRNG).
 BOOM_CRASH_PREFIXES = ("BOOM", "CRASH")
 
+# RDBULL/RDBEAR get a purpose-built strategy in addition to the generic
+# rsi_mean_reversion, so results are directly comparable in the same run.
+# Direct measurement (check_daily_reset.py) confirmed both instruments have
+# a real, large price discontinuity at 00:00 GMT — RDBULL drops ~8.6% at
+# reset, RDBEAR jumps ~5.3% — and rsi_mean_reversion's only real edge
+# across all 17 instruments showed up on exactly these two. daily_reset_
+# reversion tests whether trading that known window directly beats RSI
+# stumbling into it by accident.
+DAILY_RESET_STRATEGIES = {
+    "RDBULL": "daily_reset_reversion_bull",
+    "RDBEAR": "daily_reset_reversion_bear",
+}
+
 # Momentum crossover lost money on all 17/17 instruments in the first full
 # batch run (1-minute candles, 30 days) — a structurally consistent result,
 # not noise, since these instruments are engineered to have no persistent
@@ -53,7 +66,10 @@ def classify_symbol(symbol: str, include_momentum: bool = False) -> list[str]:
     """Return the list of strategy names appropriate to test for this symbol."""
     if symbol.startswith(BOOM_CRASH_PREFIXES):
         return BOOM_CRASH_STRATEGIES
-    return GENERAL_STRATEGIES_WITH_MOMENTUM if include_momentum else GENERAL_STRATEGIES
+    base = GENERAL_STRATEGIES_WITH_MOMENTUM if include_momentum else GENERAL_STRATEGIES
+    if symbol in DAILY_RESET_STRATEGIES:
+        return base + [DAILY_RESET_STRATEGIES[symbol]]
+    return base
 
 
 def discover_available_symbols() -> list[str]:
