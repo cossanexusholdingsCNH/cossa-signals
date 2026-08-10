@@ -89,6 +89,7 @@ def run_batch(
     include_momentum: bool = False,
     validate_split: bool = False,
     risk_pct_per_trade: float = 0.10,
+    fees_pct: float = 0.0005,
 ) -> pd.DataFrame:
     """
     Run every applicable strategy against every symbol, collect results
@@ -132,6 +133,7 @@ def run_batch(
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
                 risk_pct_per_trade=risk_pct_per_trade,
+                fees_pct=fees_pct,
             )
 
             if result.get("total_trades", 0) == 0:
@@ -187,13 +189,13 @@ def run_batch(
                     train_df, strategy_name=strategy_name,
                     initial_capital=initial_capital,
                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
-                    risk_pct_per_trade=risk_pct_per_trade,
+                    risk_pct_per_trade=risk_pct_per_trade, fees_pct=fees_pct,
                 )
                 test_result = run_backtest(
                     test_df, strategy_name=strategy_name,
                     initial_capital=initial_capital,
                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
-                    risk_pct_per_trade=risk_pct_per_trade,
+                    risk_pct_per_trade=risk_pct_per_trade, fees_pct=fees_pct,
                 )
                 train_trades = train_result.get("total_trades", 0)
                 test_trades = test_result.get("total_trades", 0)
@@ -326,6 +328,16 @@ if __name__ == "__main__":
              "a more conservative, institutional-style position size, or whether it's "
              "still partly an artifact of how much capital gets compounded per trade.",
     )
+    parser.add_argument(
+        "--fees-pct",
+        type=float,
+        default=0.0005,
+        help="Per-trade fee/spread cost as a fraction of price (0.0005 = 5 bps, the "
+             "default assumption). The exact real spread on RDBULL/RDBEAR via Deriv's "
+             "live API hasn't been confirmed — raise this (e.g. 0.0025 or 0.005, 5-10x "
+             "the default) to see whether a promising result survives a much more "
+             "pessimistic fee assumption before trusting the exact number matters.",
+    )
     args = parser.parse_args()
 
     symbols_to_test = args.symbols if args.symbols else discover_available_symbols()
@@ -348,5 +360,6 @@ if __name__ == "__main__":
         include_momentum=args.include_momentum,
         validate_split=args.validate_split,
         risk_pct_per_trade=args.risk_pct,
+        fees_pct=args.fees_pct,
     )
     save_and_summarize(results)
