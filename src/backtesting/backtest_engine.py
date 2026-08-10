@@ -92,6 +92,31 @@ def load_data(symbol: str) -> pd.DataFrame:
     return df
 
 
+def infer_freq(df: pd.DataFrame) -> str:
+    """
+    Infer the pandas-compatible bar frequency directly from the data's own
+    datetime index, instead of trusting a caller to pass the right one.
+
+    Why this exists: run_backtest() previously hardcoded freq="1min". That
+    was silently wrong the moment any script fed it 5-minute or resampled
+    data — vectorbt uses `freq` to annualize Sharpe (periods-per-year), so
+    a 5-minute series interpreted as 1-minute bars overstates the number of
+    trading periods per year by 5x, which inflates Sharpe by roughly
+    sqrt(5) (~2.2x). This surfaced for real on the 180-day/5-min batch run:
+    RDBULL reported Sharpe 10.9 — a number no real strategy produces —
+    largely because of this bug, not genuine risk-adjusted performance.
+
+    Inferring freq from the median gap between consecutive index timestamps
+    means this is correct automatically, regardless of what granularity was
+    fetched or what --resample rule was applied upstream. No caller needs
+    to remember to pass it.
+    """
+    if len(df.index) < 2:
+        return "1min"  # can't infer from <2 points; harmless fallback
+    median_gap = df.index.to_series().diff().median()
+    return pd.tseries.frequencies.to_offset(median_gap).freqstr
+
+
 def run_backtest(
     df: pd.DataFrame,
     strategy_name: str,
@@ -99,6 +124,7 @@ def run_backtest(
     stop_loss_pct: float = 0.02,
     take_profit_pct: float = 0.04,
     fees_pct: float = 0.0005,
+    risk_pct_per_trade: float = 0.10,
     **strategy_kwargs,
 ) -> dict:
     """
@@ -118,6 +144,16 @@ def run_backtest(
                   never backtest as if trading is free; spread/commission
                   costs are what turn a "profitable on paper" strategy
                   into a loser in practice.
+        risk_pct_per_trade: Fraction of AVAILABLE CASH deployed per trade
+                  (0.10 = 10%). Without this, vectorbt's default is to
+                  deploy 100% of available cash on every entry, which
+                  compounds unrealistically over a long trade sequence —
+                  this is what actually drove the 800-900%+ "returns" on
+                  RDBULL/RDBEAR in the 180-day/5-min run, not real edge.
+                  No real trader risks 100% of capital on a single
+                  stop/take-profit bracket; this was always the missing
+                  half of "mandatory risk management" (SL/TP levels were
+                  implemented, position sizing was not — until now).
         **strategy_kwargs: Passed through to the strategy function.
 
     Returns:
@@ -140,7 +176,9 @@ def run_backtest(
         fees=fees_pct,
         sl_stop=stop_loss_pct,
         tp_stop=take_profit_pct,
-        freq="1min",  # adjust to match the granularity of the input data
+        size=risk_pct_per_trade,
+        size_type="percent",  # deploy risk_pct_per_trade of available cash, not 100% of it
+        freq=infer_freq(df),  # correct annualization regardless of candle width
     )
 
     total_trades = portfolio.trades.count()

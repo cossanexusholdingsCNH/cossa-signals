@@ -71,6 +71,7 @@ def run_batch(
     take_profit_pct: float = 0.04,
     resample_rule: str | None = None,
     include_momentum: bool = False,
+    validate_split: bool = False,
 ) -> pd.DataFrame:
     """
     Run every applicable strategy against every symbol, collect results
@@ -88,6 +89,19 @@ def run_batch(
         original_len = len(df)
         if resample_rule:
             df = resample_ohlc(df, resample_rule)
+
+        # Buy-and-hold benchmark: simply holding the instrument over the same
+        # window, no strategy at all. Exists because RDBULL/RDBEAR returned
+        # 800-900%+ on the 180-day/5-min run and it turned out to be almost
+        # entirely the instrument's own structural drift (Deriv's "Bull
+        # Market"/"Bear Market" indices are designed to trend persistently),
+        # not genuine strategy edge. Any strategy result should be judged
+        # against this number — a strategy that barely beats buy-and-hold,
+        # or loses to it, has NOT found an edge no matter how good its
+        # standalone return looks.
+        buy_hold_pct = round(
+            float((df["Close"].iloc[-1] - df["Close"].iloc[0]) / df["Close"].iloc[0] * 100), 2
+        )
 
         strategies_to_test = classify_symbol(symbol, include_momentum=include_momentum)
         span_note = f" -> resampled to {resample_rule} ({len(df)} candles)" if resample_rule else ""
@@ -112,9 +126,13 @@ def run_batch(
                     "sharpe": None,
                     "max_dd_pct": None,
                     "total_return_pct": None,
+                    "buy_hold_pct": buy_hold_pct,
+                    "beats_buy_hold": None,
                     "note": "no trades generated",
                 })
                 continue
+
+            beats_buy_hold = result["total_return_pct"] is not None and result["total_return_pct"] > buy_hold_pct
 
             rows.append({
                 "symbol": symbol,
@@ -125,6 +143,8 @@ def run_batch(
                 "sharpe": result["sharpe_ratio"],
                 "max_dd_pct": result["max_drawdown_pct"],
                 "total_return_pct": result["total_return_pct"],
+                "buy_hold_pct": buy_hold_pct,
+                "beats_buy_hold": beats_buy_hold,
                 "trustworthy": result["total_trades"] >= MIN_TRUSTWORTHY_TRADES,
                 "note": "" if result["total_trades"] >= MIN_TRUSTWORTHY_TRADES
                         else f"only {result['total_trades']} trades — below {MIN_TRUSTWORTHY_TRADES}, treat as noise",
@@ -132,7 +152,52 @@ def run_batch(
             print(f"  [DONE] {symbol:12} {strategy_name:28} "
                   f"trades={result['total_trades']:>5}  "
                   f"win_rate={result['win_rate_pct']}%  "
-                  f"return={result['total_return_pct']}%")
+                  f"return={result['total_return_pct']}%  "
+                  f"buy_hold={buy_hold_pct}%  "
+                  f"{'BEATS B&H' if beats_buy_hold else 'loses to B&H'}")
+
+            # Train/test split validation — the real check before trusting
+            # any result. A strategy that only works on the slice it was
+            # (implicitly) eyeballed against is overfitting to that window,
+            # not finding real edge. Nothing in this project had been run
+            # through this before the 180-day/5-min batch, which is exactly
+            # why RDBULL/RDBEAR's numbers made it as far as a printout
+            # before anyone caught the problem.
+            if validate_split and result["total_trades"] > 0:
+                train_df, test_df = train_test_split_ohlc(df, train_frac=0.7)
+                train_result = run_backtest(
+                    train_df, strategy_name=strategy_name,
+                    initial_capital=initial_capital,
+                    stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                )
+                test_result = run_backtest(
+                    test_df, strategy_name=strategy_name,
+                    initial_capital=initial_capital,
+                    stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                )
+                train_trades = train_result.get("total_trades", 0)
+                test_trades = test_result.get("total_trades", 0)
+                train_ret = train_result.get("total_return_pct")
+                test_ret = test_result.get("total_return_pct")
+
+                holds_up = (
+                    test_trades >= 10  # too few test-slice trades to say anything
+                    and test_ret is not None
+                    and test_ret > 0
+                )
+                verdict = (
+                    "HOLDS UP on unseen data" if holds_up
+                    else "DOES NOT HOLD UP on unseen data — overfit to this window, not a real edge"
+                )
+                print(
+                    f"           [SPLIT] train: {train_trades} trades, {train_ret}%  |  "
+                    f"test: {test_trades} trades, {test_ret}%  -->  {verdict}"
+                )
+                rows[-1]["split_train_return_pct"] = train_ret
+                rows[-1]["split_train_trades"] = train_trades
+                rows[-1]["split_test_return_pct"] = test_ret
+                rows[-1]["split_test_trades"] = test_trades
+                rows[-1]["split_holds_up"] = holds_up
 
     return pd.DataFrame(rows)
 
@@ -162,10 +227,12 @@ def save_and_summarize(results: pd.DataFrame) -> None:
         print("  approach before any result here can be trusted.")
     else:
         for _, row in trustworthy.iterrows():
+            flag = "" if row.get("beats_buy_hold") else "  <-- DOES NOT BEAT BUY-AND-HOLD, likely riding instrument drift, not real edge"
             print(
                 f"  {row['symbol']:12} {row['strategy']:28} "
-                f"return={row['total_return_pct']:>7}%  win_rate={row['win_rate_pct']:>6}%  "
-                f"sharpe={row['sharpe']:>7}  trades={row['trades']:>5}  max_dd={row['max_dd_pct']}%"
+                f"return={row['total_return_pct']:>7}%  buy_hold={row.get('buy_hold_pct', 'n/a'):>7}%  "
+                f"win_rate={row['win_rate_pct']:>6}%  "
+                f"sharpe={row['sharpe']:>7}  trades={row['trades']:>5}  max_dd={row['max_dd_pct']}%{flag}"
             )
 
     print(f"\n{'=' * 70}")
@@ -214,6 +281,17 @@ if __name__ == "__main__":
         help="Also test momentum_ma_crossover, which lost money on 17/17 instruments in the "
              "first batch run. Off by default now — pass this to re-include it anyway.",
     )
+    parser.add_argument(
+        "--validate-split",
+        action="store_true",
+        help="For every symbol tested, also run the SAME strategy separately on the first "
+             "70%% (train) and last 30%% (test) of the data using train_test_split_ohlc(), "
+             "and report both. This is the real check before trusting any result: a strategy "
+             "that only performs on the train slice and falls apart on the untouched test "
+             "slice was overfit to that specific window, not genuinely predictive. Nothing "
+             "in this project has been run through this check yet — do this before paper "
+             "trading anything, especially R_75.",
+    )
     args = parser.parse_args()
 
     symbols_to_test = args.symbols if args.symbols else discover_available_symbols()
@@ -234,5 +312,6 @@ if __name__ == "__main__":
         take_profit_pct=args.take_profit,
         resample_rule=args.resample,
         include_momentum=args.include_momentum,
+        validate_split=args.validate_split,
     )
     save_and_summarize(results)
