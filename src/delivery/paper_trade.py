@@ -206,36 +206,84 @@ def process_candle(symbol: str, candle: dict, state: dict, capital: float) -> fl
     return capital
 
 
-async def run_symbol_stream(ws, symbol: str, state: dict, capital_holder: dict):
-    """Subscribe to live candles for one symbol and process each update."""
-    request = {
-        "ticks_history": symbol,
-        "adjust_start_time": 1,
-        "count": 1,
-        "end": "latest",
-        "start": 1,
-        "style": "candles",
-        "granularity": GRANULARITY_SEC,
-        "subscribe": 1,
+def build_candle_from_ticks(bucket_ticks: list[dict], granularity_sec: int) -> dict:
+    """Aggregate a list of raw ticks (each {epoch, quote}) into one OHLC candle."""
+    epochs = [t["epoch"] for t in bucket_ticks]
+    prices = [t["quote"] for t in bucket_ticks]
+    bucket_start = (epochs[0] // granularity_sec) * granularity_sec
+    return {
+        "epoch": bucket_start,
+        "open": prices[0],
+        "high": max(prices),
+        "low": min(prices),
+        "close": prices[-1],
     }
-    await ws.send(json.dumps(request))
 
-    while True:
-        response_raw = await ws.recv()
-        response = json.loads(response_raw)
 
-        if "error" in response:
-            logger.error(f"[{symbol}] Deriv API error: {response['error'].get('message')}")
-            continue
+async def run_symbol_stream(symbol: str, state: dict, capital_holder: dict):
+    """
+    Open a DEDICATED connection for this symbol and stream raw ticks,
+    aggregating them into 5-min candles client-side.
 
-        # Initial response has "candles" (a list); streamed updates have "ohlc" (one candle)
-        candles = response.get("candles", [])
-        if "ohlc" in response:
-            candles = [response["ohlc"]]
+    Two things changed from the first version of this function, both
+    found the hard way on the first live run:
 
-        for candle in candles:
-            capital_holder[symbol] = process_candle(symbol, candle, state, capital_holder[symbol])
-            save_state(state)  # persist after every candle — never lose an open position
+    1. One connection PER symbol, not shared. websockets forbids two
+       concurrent recv() calls on the same connection — there's no way
+       for the library to know which task should get which incoming
+       message, so it raises ConcurrencyError. Sharing one connection
+       across two symbol streams was a real architecture bug, not an
+       edge case.
+
+    2. Subscribing to raw "ticks" and aggregating candles ourselves,
+       instead of asking Deriv for server-side "candles" + subscribe=1.
+       The first live run got "Symbol RDBULL is invalid" specifically
+       on that combination — plain historical candle counts work fine
+       (fetch_deriv_data.py proved that), so the likely issue is that
+       server-side candle-streaming isn't supported for Daily Reset
+       Indices. Raw tick subscription is Deriv's most basic, universally
+       documented streaming primitive — building candles from ticks
+       ourselves avoids depending on a feature that may not exist for
+       this instrument class.
+    """
+    async with websockets.connect(DERIV_WS_URL) as ws:
+        logger.info(f"[{symbol}] Connected (dedicated connection).")
+        await ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+
+        bucket_ticks: list[dict] = []
+        current_bucket_start: int | None = None
+
+        while True:
+            response_raw = await ws.recv()
+            response = json.loads(response_raw)
+
+            if "error" in response:
+                logger.error(f"[{symbol}] Deriv API error: {response['error'].get('message')}")
+                await asyncio.sleep(5)
+                continue
+
+            tick = response.get("tick")
+            if tick is None:
+                continue
+
+            epoch = int(tick["epoch"])
+            quote = float(tick["quote"])
+            bucket_start = (epoch // GRANULARITY_SEC) * GRANULARITY_SEC
+
+            if current_bucket_start is None:
+                current_bucket_start = bucket_start
+
+            if bucket_start != current_bucket_start:
+                # Bucket boundary crossed — the previous bucket's candle is
+                # complete. Process it, then start the new bucket with this tick.
+                if bucket_ticks:
+                    candle = build_candle_from_ticks(bucket_ticks, GRANULARITY_SEC)
+                    capital_holder[symbol] = process_candle(symbol, candle, state, capital_holder[symbol])
+                    save_state(state)  # persist after every completed candle
+                bucket_ticks = []
+                current_bucket_start = bucket_start
+
+            bucket_ticks.append({"epoch": epoch, "quote": quote})
 
 
 async def main(symbols: list[str], initial_capital: float):
@@ -252,24 +300,21 @@ async def main(symbols: list[str], initial_capital: float):
         logger.info(f"Resumed with open position(s) from previous run: "
                     f"{ {s: state['positions'][s] for s in symbols if state['positions'][s]} }")
 
-    reconnect_delay = 5
-    while True:
-        try:
-            async with websockets.connect(DERIV_WS_URL) as ws:
-                logger.info("Connected to Deriv WebSocket.")
-                reconnect_delay = 5  # reset backoff on a successful connection
-                tasks = [
-                    asyncio.create_task(run_symbol_stream(ws, symbol, state, capital_holder))
-                    for symbol in symbols
-                ]
-                await asyncio.gather(*tasks)
-        except (websockets.exceptions.ConnectionClosed, OSError) as e:
-            logger.warning(f"Connection lost ({e}). Reconnecting in {reconnect_delay}s...")
-            for symbol in symbols:
+    async def run_symbol_with_reconnect(symbol: str):
+        reconnect_delay = 5
+        while True:
+            try:
+                await run_symbol_stream(symbol, state, capital_holder)
+            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+                logger.warning(f"[{symbol}] Connection lost ({e}). Reconnecting in {reconnect_delay}s...")
                 state["equity"][symbol] = capital_holder[symbol]
-            save_state(state)
-            await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, 300)  # exponential backoff, capped at 5 min
+                save_state(state)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 300)  # exponential backoff, capped at 5 min
+            else:
+                reconnect_delay = 5  # reset backoff after a clean run
+
+    await asyncio.gather(*[run_symbol_with_reconnect(s) for s in symbols])
 
 
 if __name__ == "__main__":
