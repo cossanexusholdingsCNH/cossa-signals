@@ -64,6 +64,7 @@ ENV_PATH = Path(__file__).resolve().parents[2] / "config" / ".env"
 load_dotenv(ENV_PATH)
 
 DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
+DERIV_API_TOKEN = os.getenv("DERIV_API_TOKEN")  # optional — see check_live_symbols.py
 DERIV_WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 
 PAPER_TRADE_DIR = Path(__file__).resolve().parents[2] / "data" / "paper_trades"
@@ -248,6 +249,14 @@ async def run_symbol_stream(symbol: str, state: dict, capital_holder: dict):
     """
     async with websockets.connect(DERIV_WS_URL) as ws:
         logger.info(f"[{symbol}] Connected (dedicated connection).")
+        if DERIV_API_TOKEN:
+            await ws.send(json.dumps({"authorize": DERIV_API_TOKEN}))
+            auth_response = json.loads(await ws.recv())
+            if "error" in auth_response:
+                logger.error(f"[{symbol}] Authorize failed: {auth_response['error'].get('message')} "
+                             f"— check DERIV_API_TOKEN in config/.env")
+                return
+            logger.info(f"[{symbol}] Authorized as {auth_response.get('authorize', {}).get('loginid')}")
         await ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
 
         bucket_ticks: list[dict] = []

@@ -29,11 +29,42 @@ from dotenv import load_dotenv
 ENV_PATH = Path(__file__).resolve().parent / "config" / ".env"
 load_dotenv(ENV_PATH)
 DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
+DERIV_API_TOKEN = os.getenv("DERIV_API_TOKEN")  # optional — needed for live streaming/active_symbols
 DERIV_WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+
+
+async def authorize_if_token_present(ws) -> bool:
+    """
+    Send an authorize request if DERIV_API_TOKEN is set in config/.env.
+    Historical data (ticks_history) worked without this. Live streaming
+    (ticks subscribe) and active_symbols failing for EVERY symbol tried,
+    including R_75, points to this being the missing piece — not a
+    symbol problem at all.
+
+    Returns True if authorized (or no token was configured — some
+    accounts/app_ids may not need it), False if the token was rejected.
+    """
+    if not DERIV_API_TOKEN:
+        print("  (no DERIV_API_TOKEN set in config/.env — proceeding unauthenticated, "
+              "as before. If everything still fails, this is almost certainly why.)")
+        return True
+
+    await ws.send(json.dumps({"authorize": DERIV_API_TOKEN}))
+    response_raw = await ws.recv()
+    response = json.loads(response_raw)
+    if "error" in response:
+        print(f"  [FAIL] authorize: {response['error'].get('message')}")
+        return False
+    account = response.get("authorize", {})
+    print(f"  [OK]   authorized as account {account.get('loginid')} "
+          f"(scopes: {account.get('scopes')})")
+    return True
 
 
 async def try_tick_subscribe(symbol: str, listen_seconds: float = 3.0):
     async with websockets.connect(DERIV_WS_URL) as ws:
+        if not await authorize_if_token_present(ws):
+            return False
         await ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
         try:
             response_raw = await asyncio.wait_for(ws.recv(), timeout=listen_seconds)
@@ -54,6 +85,8 @@ async def try_tick_subscribe(symbol: str, listen_seconds: float = 3.0):
 
 async def check_active_symbols():
     async with websockets.connect(DERIV_WS_URL) as ws:
+        if not await authorize_if_token_present(ws):
+            return
         await ws.send(json.dumps({
             "active_symbols": "brief",
             "product_type": "basic",
