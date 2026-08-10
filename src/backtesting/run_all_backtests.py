@@ -72,6 +72,7 @@ def run_batch(
     resample_rule: str | None = None,
     include_momentum: bool = False,
     validate_split: bool = False,
+    risk_pct_per_trade: float = 0.10,
 ) -> pd.DataFrame:
     """
     Run every applicable strategy against every symbol, collect results
@@ -114,6 +115,7 @@ def run_batch(
                 initial_capital=initial_capital,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
+                risk_pct_per_trade=risk_pct_per_trade,
             )
 
             if result.get("total_trades", 0) == 0:
@@ -169,11 +171,13 @@ def run_batch(
                     train_df, strategy_name=strategy_name,
                     initial_capital=initial_capital,
                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                    risk_pct_per_trade=risk_pct_per_trade,
                 )
                 test_result = run_backtest(
                     test_df, strategy_name=strategy_name,
                     initial_capital=initial_capital,
                     stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+                    risk_pct_per_trade=risk_pct_per_trade,
                 )
                 train_trades = train_result.get("total_trades", 0)
                 test_trades = test_result.get("total_trades", 0)
@@ -182,8 +186,13 @@ def run_batch(
 
                 holds_up = (
                     test_trades >= 10  # too few test-slice trades to say anything
-                    and test_ret is not None
-                    and test_ret > 0
+                    and test_ret is not None and train_ret is not None
+                    and test_ret > 0 and train_ret > 0  # BOTH halves must agree, not just test —
+                    # a strategy that loses overall but got a lucky positive test slice
+                    # (e.g. R_100, R_50 on the 180-day/5-min run: train negative, test
+                    # barely positive, overall negative) is not a validated edge, it's
+                    # noise that happened to land on the right side once. Only requiring
+                    # test_ret > 0 let exactly that slip through as "HOLDS UP" — fixed here.
                 )
                 verdict = (
                     "HOLDS UP on unseen data" if holds_up
@@ -292,6 +301,15 @@ if __name__ == "__main__":
              "in this project has been run through this check yet — do this before paper "
              "trading anything, especially R_75.",
     )
+    parser.add_argument(
+        "--risk-pct",
+        type=float,
+        default=0.10,
+        help="Fraction of available cash deployed per trade (0.10 = 10%%, the default). "
+             "Lower this (e.g. 0.02) to sanity-check whether a promising result survives "
+             "a more conservative, institutional-style position size, or whether it's "
+             "still partly an artifact of how much capital gets compounded per trade.",
+    )
     args = parser.parse_args()
 
     symbols_to_test = args.symbols if args.symbols else discover_available_symbols()
@@ -313,5 +331,6 @@ if __name__ == "__main__":
         resample_rule=args.resample,
         include_momentum=args.include_momentum,
         validate_split=args.validate_split,
+        risk_pct_per_trade=args.risk_pct,
     )
     save_and_summarize(results)
