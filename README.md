@@ -37,18 +37,21 @@ cp config/.env.example config/.env   # then fill in your real API keys
 
 - [x] Repo structure and dependencies defined
 - [x] Forex data fetcher (yfinance, daily OHLCV — EUR/USD, GBP/USD, USD/ZAR)
-- [x] Deriv synthetic indices data fetcher (Volatility 75, Boom 1000/500, Crash 1000/500) — written and syntax-verified; **not yet tested against a live connection**, see note in fetch_deriv_data.py
-- [x] Backtesting harness (vectorbt-based, with mandatory stop-loss/take-profit and fee modeling) — tested end-to-end against synthetic sample data, confirmed working
 - [x] Deriv synthetic indices data fetcher — `--all` flag validated live: 17/17 candidate symbols confirmed tradeable and fetched successfully (Volatility 10/25/50/75/100, all five 1s variants, Boom 500/1000, Crash 500/1000, Bull/Bear Market, Step Index). Jump Indices and Range Break not yet added — exact symbol codes need confirming before including them.
-- [x] Batch backtest runner (src/backtesting/run_all_backtests.py) — tests every applicable strategy against every fetched symbol in one command, instrument-aware (Boom/Crash get the spike-reversion strategy, everything else gets momentum/mean-reversion), outputs a ranked summary CSV. Verified against synthetic multi-symbol test data, confirmed correct strategy routing on real Deriv symbol names.
-- [x] Pagination added to fetch_deriv_data.py (--days flag) — automatically chains multiple API calls to pull real months of history instead of one 5000-candle batch (~3.5 days); logic verified against a mocked connection, not yet run against live Deriv for a large pull
+- [x] Pagination added to fetch_deriv_data.py (--days flag) — chains paginated API calls to pull real months of history. Live-pulled 180 days at 5-minute granularity for all 17 instruments — the current working dataset (data/raw/, gitignored).
+- [x] Backtesting harness (vectorbt-based) — mandatory stop-loss/take-profit/fee modeling, Sharpe annualization fix, position sizing, buy-and-hold benchmark, train/test split validation (`train_test_split_ohlc`), minimum-trade-count enforcement (`MIN_TRUSTWORTHY_TRADES = 30`) so low-sample results can't be mistaken for edge.
+- [x] Batch backtest runner (src/backtesting/run_all_backtests.py) — every applicable strategy against every symbol in one command, instrument-aware routing (Boom/Crash → spike-reversion, RDBULL/RDBEAR → daily-reset-reversion, everything else → momentum/RSI mean-reversion), ranked CSV output.
+- [x] **First real finding: RDBULL/RDBEAR daily-reset reversion.** Generic RSI mean-reversion's only real edge across all 17 instruments landed on exactly these two. `check_daily_reset.py` confirmed why: a real ~10x-normal-move price discontinuity at the 00:00 GMT reset (RDBULL gaps down ~8.6%, RDBEAR gaps up ~5.3%). A purpose-built `daily_reset_reversion` strategy trading that window directly passed the 70/30 train/test split (held up on unseen data). Still not validated on live data — see next item.
+- [x] Live paper-trading harness (src/delivery/paper_trade.py) — watches RDBULL/RDBEAR live and simulates daily_reset_reversion in real time, no real money touched, state persists across restarts. **Currently blocked**: live-stream connection is rejecting symbol subscriptions; most recent commits are diagnosing an app-authorization gap. Not yet run successfully end-to-end.
 - [x] Educational resource: docs/Deriv_Synthetic_Indices_Trading_Guide.docx — plain-language guide to synthetic indices, risk management, and strategy frameworks for newcomers
-- [x] Baseline strategies: momentum crossover, RSI mean-reversion, spike-reversion (Boom/Crash-specific) — all are untested hypotheses on real data, not proven edges
-- [ ] Run backtests against real historical data once fetch_deriv_data.py is validated locally
-- [ ] ML signal layer
-- [ ] Risk management / position sizing logic (beyond per-trade stop-loss)
+- [x] Baseline strategies: momentum crossover (tested, lost money 17/17 on 1-min real data — structurally wrong for these instruments, deprioritized), RSI mean-reversion (only edge found on RDBULL/RDBEAR), spike-reversion (Boom/Crash-specific, lost on all 4 tested), daily-reset-reversion (see finding above)
+- [x] **web/index.html** — Cossa Signals Agent Console, a live status dashboard reflecting the real state of this table (deployed to Vercel). Update it by hand whenever this checklist changes; it is not yet wired to read live pipeline/paper-trade state automatically.
+- [ ] Fix live paper-trading stream authorization, then run a 4–6 week unattended paper-trading window on RDBULL/RDBEAR before any conversation about real capital
+- [ ] Re-run momentum/RSI/spike-reversion against the 180-day/5-min dataset on the remaining 15 instruments (not yet done — daily-reset finding took priority)
+- [ ] ML signal layer — next after the above, or after ruling out classical strategies on the rest of the 17
+- [ ] Risk management / position sizing logic beyond per-trade stop-loss
 - [ ] Telegram delivery bot
-- [ ] Dashboard (Lovable + Supabase)
+- [ ] Wire the dashboard to live pipeline/backtest/paper-trade state instead of manual updates
 - [ ] Copy-trade execution — **on hold** pending backtest validation, paper trading, and a compliance/FSP licensing check (see project decisions in chat history)
 
 ## A note on Deriv synthetic indices (Volatility, Boom, Crash)
